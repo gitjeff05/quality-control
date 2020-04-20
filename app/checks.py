@@ -527,33 +527,31 @@ def increasing_values(row, df: pd.DataFrame, log: ResultLog, config: QCConfig = 
 
 # ----------------------------------------------------------------
 
-def monotonically_increasing(df: pd.DataFrame, log: ResultLog):
+def monotonically_increasing(df: pd.DataFrame, state: str, log: ResultLog):
     """Check that timeseries values are monotonically increasing
 
     Input is expected to be the values for a single state
     """
-
     columns_to_check = ["positive", "negative","hospitalized", "death"]
-
-    state = df["state"].min()
-    if state != df["state"].max():
+    
+    if (len(df['state'].unique()) > 1):
         raise Exception("Expected input to be for a single state")
+    
+    df = df.sort_values(by="date", ascending=True)
+    df['date']= pd.to_datetime(df['date'].astype('str'), format="%Y%m%d") 
 
-    # TODO: don't group on state -- this is already filtered to a single state
-    df = df.sort_values(["state", "date"], ascending=True)
-    df_lagged = df.groupby("state")[columns_to_check] \
-        .shift(1) \
-        .rename(columns=lambda c: c+"_lag")
-
-    df_comparison = df.merge(df_lagged, left_index=True, right_index=True, how="left")
+    exceptions = []
 
     # check that all the counts are >= the previous day
     for col in columns_to_check:
-        if (df_comparison[f"{col}_lag"] > df_comparison[col]).any():
-            error_dates = df_comparison.loc[(df_comparison[f"{col}_lag"] > df_comparison[col])]["date"]
-            error_dates_str = error_dates.astype(str).str.cat(sep=", ")
-
+        if (df[col].is_monotonic == False):
+            dates = df.loc[df[col].diff() < 0, 'date']
+            error_dates_str = dates.dt.strftime('%Y-%m-%d').values
             log.data_quality(state, f"{col} values decreased from the previous day (on {error_dates_str})")
+            for date in dates:
+               exceptions.append({ 'state': state, 'date': date, 'exception_type': col })
+
+    return exceptions
 
 # ----------------------------------------------------------------
 

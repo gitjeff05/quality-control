@@ -7,6 +7,7 @@ import numpy as np
 from datetime import datetime
 from argparse import ArgumentParser, Namespace, RawDescriptionHelpFormatter
 from datetime import timedelta
+from operator import itemgetter
 
 import app.checks as checks
 from .qc_config import QCConfig
@@ -179,6 +180,24 @@ def check_current(ds: DataSource, config: QCConfig) -> ResultLog:
     log.consolidate()
     return log
 
+def find_in_exceptions(row, df):
+    """
+    Find a row in a dataframe matching on state, date and exception_type
+    """
+    state, date, exception_type = itemgetter('state', 'date', 'exception_type')(row)
+    found = df.loc[(df['state'] == state) & (df['date'] == date) & (df['exception_type'] == exception_type)]
+    return (False, True)[found.size < 1]
+
+def send_anomaly_info(anomalies):
+    """
+    Warn user on found anomalies with instructions on how
+    to add the anomaly to list of exceptions
+    """
+    for a in anomalies:
+        state, date, exception_type = itemgetter('state', 'date', 'exception_type')(a)
+        print(f'Found anomaly in {state} on {date} for type {exception_type}')
+        print('You should verify this with Data Entry or QA team, \nthen enter it into the list of allowed exceptions: "./resources/exceptions.csv"')
+        print(f'{state},{date.strftime("%Y-%m-%d")},{exception_type}')
 
 def check_history(ds: DataSource) -> ResultLog:
     """
@@ -187,15 +206,39 @@ def check_history(ds: DataSource) -> ResultLog:
 
     log = ResultLog()
 
+    exceptions_cached = pd.read_csv('./resources/exceptions.csv', parse_dates=['date'])
+
     df = ds.history
     if is_missing(df): 
         log.internal("Source", "History not available")
         return None
 
-    for state in df["state"].drop_duplicates().values:
-        state_df = df.loc[df["state"] == state]
-        checks.monotonically_increasing(state_df, log)
+    for state in df["state"].unique():
+        exceptions = checks.monotonically_increasing(df.loc[df["state"] == state], state, log)
+        if (len(exceptions) > 0):
+            not_cached = list(filter(lambda x: find_in_exceptions(x, exceptions_cached), exceptions))
+            if (len(not_cached) > 0):
+                send_anomaly_info(not_cached)
 
     log.consolidate()
     return log
 
+def cache_exceptions():
+    """
+    Check the history and create a new exceptions file
+    """
+
+    df = ds.history
+    if is_missing(df): 
+        log.internal("Source", "History not available")
+        return None
+
+    # For saving 
+    exceptions_df = pd.DataFrame(np.empty((0, 3)), columns=['state', 'date', 'exception_type'])
+
+    for state in df["state"].unique():
+        exceptions = checks.monotonically_increasing(df.loc[df["state"] == state], state, log)
+        if (len(exceptions) > 0):
+            exceptions_df = exceptions_df.append(exceptions, ignore_index=True)
+            
+    exceptions_df.to_csv('./resources/exceptions.csv', index=False)
